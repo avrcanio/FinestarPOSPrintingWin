@@ -1,0 +1,11 @@
+{
+  "Version": 1,
+  "Hash": "F6Y9prQLgm8/On5O71JIjRLeb9wR0N5CNm3AxrDJQIQ=",
+  "Source": "MozzartPrintReceiver",
+  "BasePath": "_content/MozzartPrintReceiver",
+  "Mode": "Default",
+  "ManifestType": "Build",
+  "ReferencedProjectsConfiguration": [],
+  "DiscoveryPatterns": [],
+  "Assets": []
+}
