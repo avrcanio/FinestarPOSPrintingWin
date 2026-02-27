@@ -8,3 +8,9 @@
 *.userosscache
 *.sln.docstates
 .vs/
+
+# Local SDK drop
+StarPRNT_WindowsDesktop_SDK_V5.20.0_20250519/
+
+# Local agent notes
+AGENTS.md
