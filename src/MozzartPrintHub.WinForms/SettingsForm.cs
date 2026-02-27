@@ -43,9 +43,10 @@ public sealed class SettingsForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
-            RowCount = 16,
+            RowCount = 0,
             Padding = new Padding(12),
-            AutoSize = true
+            AutoSize = true,
+            AutoScroll = true
         };
 
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
@@ -86,7 +87,8 @@ public sealed class SettingsForm : Form
 
     private static void AddRow(TableLayoutPanel layout, string label, Control control)
     {
-        var row = layout.RowCount++;
+        var row = layout.RowCount;
+        layout.RowCount += 1;
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
         var labelControl = new Label { Text = label, AutoSize = true, Padding = new Padding(0, 8, 0, 0) };
         layout.Controls.Add(labelControl, 0, row);

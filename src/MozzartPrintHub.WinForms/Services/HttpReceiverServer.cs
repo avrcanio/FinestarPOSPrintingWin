@@ -7,17 +7,23 @@ namespace MozzartPrintHub.WinForms.Services;
 
 public sealed class HttpReceiverServer
 {
-    private readonly HttpListener _listener = new();
+    private readonly string _prefix;
     private readonly EmulatorStore _store;
     private readonly Func<byte[], string, Task> _onEscPosPayload;
+    private readonly ReceiptPreviewService _receiptPreviewService;
+    private readonly Func<EmulatorJob, Task>? _onJobAdded;
     private readonly string? _token;
     private CancellationTokenSource? _cts;
+    private Task? _loopTask;
+    private HttpListener? _listener;
 
     public HttpReceiverServer(
         string bind,
         int port,
         EmulatorStore store,
         Func<byte[], string, Task> onEscPosPayload,
+        ReceiptPreviewService receiptPreviewService,
+        Func<EmulatorJob, Task>? onJobAdded,
         string? token)
     {
         var host = bind switch
@@ -27,34 +33,75 @@ public sealed class HttpReceiverServer
             _ => bind
         };
 
-        var prefix = $"http://{host}:{port}/";
-        _listener.Prefixes.Add(prefix);
+        _prefix = $"http://{host}:{port}/";
         _store = store;
         _onEscPosPayload = onEscPosPayload;
+        _receiptPreviewService = receiptPreviewService;
+        _onJobAdded = onJobAdded;
         _token = token;
     }
 
     public Task StartAsync()
     {
+        if (_listener is not null && _listener.IsListening)
+        {
+            return Task.CompletedTask;
+        }
+
+        var listener = new HttpListener();
+        listener.Prefixes.Add(_prefix);
+        listener.Start();
+        _listener = listener;
+
         _cts = new CancellationTokenSource();
-        _listener.Start();
-        return Task.Run(() => LoopAsync(_cts.Token), _cts.Token);
+        _loopTask = Task.Run(() => LoopAsync(listener, _cts.Token), _cts.Token);
+        return Task.CompletedTask;
     }
 
     public void Stop()
     {
         _cts?.Cancel();
-        _listener.Stop();
+        _cts?.Dispose();
+        _cts = null;
+
+        var listener = _listener;
+        _listener = null;
+
+        if (listener is null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (listener.IsListening)
+            {
+                listener.Stop();
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        finally
+        {
+            try
+            {
+                listener.Close();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
     }
 
-    private async Task LoopAsync(CancellationToken ct)
+    private async Task LoopAsync(HttpListener listener, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
             HttpListenerContext ctx;
             try
             {
-                ctx = await _listener.GetContextAsync();
+                ctx = await listener.GetContextAsync();
             }
             catch (HttpListenerException)
             {
@@ -140,6 +187,14 @@ public sealed class HttpReceiverServer
 
             if (kind == "receipt_pdf")
             {
+                string? pdfBase64 = null;
+                if (doc.RootElement.TryGetProperty("payload", out var payloadNode)
+                    && payloadNode.ValueKind == JsonValueKind.Object
+                    && payloadNode.TryGetProperty("pdf_base64", out var pdfNode))
+                {
+                    pdfBase64 = pdfNode.GetString();
+                }
+
                 var item = new EmulatorJob
                 {
                     Id = Guid.NewGuid().ToString("N"),
@@ -147,11 +202,14 @@ public sealed class HttpReceiverServer
                     ClientIp = ctx.Request.RemoteEndPoint?.ToString() ?? "unknown",
                     RawSizeBytes = rawJson.Length,
                     ReceivedAtUtc = DateTime.UtcNow,
-                    Document = new ParsedEscPosDocument()
+                    Document = _receiptPreviewService.BuildFromPdfBase64(pdfBase64)
                 };
-                item.Document.Lines.Add(new ParsedLine { Text = "[PDF RECEIPT RECEIVED]", Align = "left", Bold = true });
-                item.PrintStatus = "received_no_preview";
+                item.PrintStatus = "preview_only";
                 _store.Add(item);
+                if (_onJobAdded is not null)
+                {
+                    await _onJobAdded(item);
+                }
                 await WriteJsonAsync(ctx.Response, 200, new { status = "accepted" });
                 return;
             }

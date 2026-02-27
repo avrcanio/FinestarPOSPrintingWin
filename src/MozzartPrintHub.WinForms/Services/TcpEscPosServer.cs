@@ -12,6 +12,7 @@ public sealed class TcpEscPosServer
     private readonly Func<byte[], string, Task> _onPayload;
     private readonly CancellationTokenSource _cts = new();
     private TcpListener? _listener;
+    private Task? _listenTask;
 
     public TcpEscPosServer(
         string bind,
@@ -39,7 +40,8 @@ public sealed class TcpEscPosServer
 
         _listener = new TcpListener(ip, _port);
         _listener.Start();
-        return Task.Run(ListenLoopAsync, _cts.Token);
+        _listenTask = Task.Run(ListenLoopAsync, _cts.Token);
+        return Task.CompletedTask;
     }
 
     public void Stop()

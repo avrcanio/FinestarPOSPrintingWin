@@ -10,6 +10,7 @@ public sealed class MainForm : Form
     private readonly AppSettingsService _settingsService;
     private readonly StartupRegistrationService _startupRegistrationService;
     private readonly EscPosParser _parser = new();
+    private readonly ReceiptPreviewService _receiptPreviewService = new();
     private readonly PrinterService _printer = new();
     private AppSettings _settings;
     private EmulatorStore _store;
@@ -130,6 +131,8 @@ public sealed class MainForm : Form
                 _settings.Receiver.Port,
                 _store,
                 OnPayloadAsync,
+                _receiptPreviewService,
+                RefreshUiAsync,
                 _settings.Receiver.Token);
             await _httpServer.StartAsync();
 
