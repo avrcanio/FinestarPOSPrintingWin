@@ -1,0 +1,10 @@
+# Build artifacts
+**/bin/
+**/obj/
+
+# User/IDE files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
