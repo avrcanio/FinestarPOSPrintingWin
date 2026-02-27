@@ -1,4 +1,6 @@
 using System.Net;
+using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using MozzartPrintHub.WinForms.Domain;
@@ -179,7 +181,8 @@ public sealed class HttpReceiverServer
 
             if (kind == "bar_ticket")
             {
-                var bytes = Encoding.ASCII.GetBytes(ExtractBarTicketText(doc.RootElement) + "\n");
+                var ticketText = BuildBarTicketText(doc.RootElement);
+                var bytes = Encoding.ASCII.GetBytes(ticketText + "\n");
                 await _onEscPosPayload(bytes, $"http:{ctx.Request.RemoteEndPoint}");
                 await WriteJsonAsync(ctx.Response, 200, new { status = "printed" });
                 return;
@@ -245,16 +248,161 @@ public sealed class HttpReceiverServer
         return true;
     }
 
-    private static string ExtractBarTicketText(JsonElement root)
+    private static string BuildBarTicketText(JsonElement root)
     {
         if (!root.TryGetProperty("payload", out var payload))
         {
             return "BAR TICKET";
         }
 
+        if (payload.ValueKind != JsonValueKind.Object)
+        {
+            return "BAR TICKET";
+        }
+
         var table = payload.TryGetProperty("table", out var tableNode) ? tableNode.GetString() : "N/A";
         var waiter = payload.TryGetProperty("waiter", out var waiterNode) ? waiterNode.GetString() : "N/A";
-        return $"Table: {table} | Waiter: {waiter}";
+        var round = payload.TryGetProperty("round_number", out var roundNode) ? roundNode.ToString() : null;
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"Table: {table} | Waiter: {waiter}");
+        if (!string.IsNullOrWhiteSpace(round))
+        {
+            sb.AppendLine($"Round: {round}");
+        }
+
+        var items = ResolveItems(payload, out var sourcePath);
+        if (items.Count > 0)
+        {
+            var sample = string.Join(", ", items.Take(2).Select(i => $"{i.Name} x{i.Qty.ToString("0.##", CultureInfo.InvariantCulture)}"));
+            Debug.WriteLine($"[bar_ticket] source={sourcePath} count={items.Count} sample={sample}");
+        }
+        else
+        {
+            var keys = string.Join(", ", payload.EnumerateObject().Select(p => p.Name));
+            Debug.WriteLine($"[bar_ticket] warning: no items resolved. payload_keys=[{keys}]");
+        }
+
+        foreach (var item in items)
+        {
+            var qtyText = item.Qty.ToString("0.##", CultureInfo.InvariantCulture);
+            var name = string.IsNullOrWhiteSpace(item.Name) ? "(unnamed)" : item.Name;
+            sb.AppendLine($"{qtyText} x {name}");
+            if (!string.IsNullOrWhiteSpace(item.Note))
+            {
+                sb.AppendLine($"  note: {item.Note}");
+            }
+        }
+
+        return sb.ToString().TrimEnd();
+    }
+
+    private static List<NormalizedTicketItem> ResolveItems(JsonElement payload, out string sourcePath)
+    {
+        var candidates = new List<(string Path, JsonElement Array)>
+        {
+            ("items", TryGetArray(payload, "items")),
+            ("ticket.items", TryGetNestedArray(payload, "ticket", "items")),
+            ("products", TryGetArray(payload, "products")),
+            ("lines", TryGetArray(payload, "lines"))
+        };
+
+        foreach (var candidate in candidates)
+        {
+            if (candidate.Array.ValueKind != JsonValueKind.Array || candidate.Array.GetArrayLength() == 0)
+            {
+                continue;
+            }
+
+            sourcePath = candidate.Path;
+            return candidate.Array.EnumerateArray()
+                .Where(x => x.ValueKind == JsonValueKind.Object)
+                .Select(NormalizeItem)
+                .ToList();
+        }
+
+        sourcePath = "none";
+        return new List<NormalizedTicketItem>();
+    }
+
+    private static JsonElement TryGetArray(JsonElement parent, string name)
+    {
+        if (parent.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Array)
+        {
+            return value;
+        }
+
+        return default;
+    }
+
+    private static JsonElement TryGetNestedArray(JsonElement parent, string objectName, string arrayName)
+    {
+        if (!parent.TryGetProperty(objectName, out var obj) || obj.ValueKind != JsonValueKind.Object)
+        {
+            return default;
+        }
+
+        return TryGetArray(obj, arrayName);
+    }
+
+    private static NormalizedTicketItem NormalizeItem(JsonElement item)
+    {
+        var name = ReadString(item, "name");
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            name = ReadString(item, "artikl_name");
+        }
+
+        var note = ReadString(item, "note") ?? string.Empty;
+        var qty = ReadQty(item);
+
+        return new NormalizedTicketItem(name ?? string.Empty, qty, note);
+    }
+
+    private static string? ReadString(JsonElement item, string key)
+    {
+        if (!item.TryGetProperty(key, out var node))
+        {
+            return null;
+        }
+
+        return node.ValueKind switch
+        {
+            JsonValueKind.String => node.GetString(),
+            JsonValueKind.Number => node.ToString(),
+            _ => null
+        };
+    }
+
+    private static decimal ReadQty(JsonElement item)
+    {
+        if (item.TryGetProperty("qty", out var qtyNode) && TryParseDecimalNode(qtyNode, out var qty))
+        {
+            return qty;
+        }
+
+        if (item.TryGetProperty("quantity", out var quantityNode) && TryParseDecimalNode(quantityNode, out var quantity))
+        {
+            return quantity;
+        }
+
+        return 0m;
+    }
+
+    private static bool TryParseDecimalNode(JsonElement node, out decimal value)
+    {
+        switch (node.ValueKind)
+        {
+            case JsonValueKind.Number:
+                return node.TryGetDecimal(out value);
+            case JsonValueKind.String:
+                var raw = node.GetString();
+                return decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out value)
+                    || decimal.TryParse(raw, NumberStyles.Any, CultureInfo.CurrentCulture, out value);
+            default:
+                value = 0m;
+                return false;
+        }
     }
 
     private static async Task WriteJsonAsync(HttpListenerResponse response, int statusCode, object body)
@@ -266,4 +414,6 @@ public sealed class HttpReceiverServer
         await response.OutputStream.WriteAsync(data);
         response.Close();
     }
+
+    private sealed record NormalizedTicketItem(string Name, decimal Qty, string Note);
 }
