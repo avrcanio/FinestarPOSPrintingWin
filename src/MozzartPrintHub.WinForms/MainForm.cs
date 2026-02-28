@@ -11,6 +11,8 @@ public sealed class MainForm : Form
     private readonly StartupRegistrationService _startupRegistrationService;
     private readonly EscPosParser _parser = new();
     private readonly ReceiptPreviewService _receiptPreviewService = new();
+    private readonly BarTicketPdfService _barTicketPdfService = new();
+    private readonly PdfPrintService _pdfPrintService = new();
     private readonly PrinterService _printer = new();
     private AppSettings _settings;
     private EmulatorStore _store;
@@ -31,6 +33,12 @@ public sealed class MainForm : Form
         ReadOnly = true,
         ScrollBars = ScrollBars.Vertical,
         Font = new Font("Consolas", 10)
+    };
+    private readonly PictureBox _receiptPicture = new()
+    {
+        Dock = DockStyle.Fill,
+        SizeMode = PictureBoxSizeMode.Zoom,
+        BackColor = Color.White
     };
 
     public MainForm()
@@ -75,8 +83,17 @@ public sealed class MainForm : Form
             SplitterDistance = 360
         };
 
+        var right = new SplitContainer
+        {
+            Dock = DockStyle.Fill,
+            Orientation = Orientation.Horizontal,
+            SplitterDistance = 300
+        };
+
         split.Panel1.Controls.Add(_historyList);
-        split.Panel2.Controls.Add(_previewBox);
+        right.Panel1.Controls.Add(_previewBox);
+        right.Panel2.Controls.Add(_receiptPicture);
+        split.Panel2.Controls.Add(right);
 
         Controls.Add(split);
         Controls.Add(top);
@@ -132,7 +149,8 @@ public sealed class MainForm : Form
                 _store,
                 OnPayloadAsync,
                 _receiptPreviewService,
-                RefreshUiAsync,
+                _barTicketPdfService,
+                HandleHttpJobAsync,
                 _settings.Receiver.Token);
             await _httpServer.StartAsync();
 
@@ -176,6 +194,7 @@ public sealed class MainForm : Form
         _store = new EmulatorStore(Math.Max(10, _settings.Emulator.MaxHistoryEntries));
         _historyList.Items.Clear();
         _previewBox.Clear();
+        SetReceiptImage(null);
         LoadPrintersAndApplyDefault();
 
         if (_tcpServer is not null || _httpServer is not null)
@@ -245,6 +264,46 @@ public sealed class MainForm : Form
         return Task.CompletedTask;
     }
 
+    private async Task HandleHttpJobAsync(EmulatorJob job)
+    {
+        if (_settings.Print.AutoPrint && !string.IsNullOrWhiteSpace(job.PdfPath))
+        {
+            var printer = !string.IsNullOrWhiteSpace(job.RequestedPrinterName)
+                ? job.RequestedPrinterName
+                : (_printerCombo.InvokeRequired
+                    ? (string?)_printerCombo.Invoke(() => _printerCombo.SelectedItem?.ToString())
+                    : _printerCombo.SelectedItem?.ToString());
+
+            if (!string.IsNullOrWhiteSpace(printer))
+            {
+                var printed = _pdfPrintService.TryPrint(
+                    job.PdfPath,
+                    printer,
+                    _settings.Print.SumatraPath,
+                    _settings.Print.SumatraTimeoutSeconds,
+                    out var error);
+                job.PrintStatus = printed ? "printed" : "failed";
+                job.Error = error;
+            }
+            else
+            {
+                job.PrintStatus = "failed";
+                job.Error = "No printer selected";
+            }
+        }
+        else if (!_settings.Print.AutoPrint)
+        {
+            job.PrintStatus = "preview_only";
+        }
+        else
+        {
+            job.PrintStatus = "failed";
+            job.Error = "No PDF to print";
+        }
+
+        await RefreshUiAsync(job);
+    }
+
     private void RenderSelectedPreview()
     {
         var selected = _store.GetHistory(200);
@@ -274,6 +333,7 @@ public sealed class MainForm : Form
         }
 
         _previewBox.Text = sb.ToString();
+        SetReceiptImage(job.PreviewImagePath);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -296,6 +356,31 @@ public sealed class MainForm : Form
                 "Startup registration error",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
+        }
+    }
+
+    private void SetReceiptImage(string? path)
+    {
+        if (_receiptPicture.Image is not null)
+        {
+            var old = _receiptPicture.Image;
+            _receiptPicture.Image = null;
+            old.Dispose();
+        }
+
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return;
+        }
+
+        try
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var img = Image.FromStream(fs);
+            _receiptPicture.Image = new Bitmap(img);
+        }
+        catch
+        {
         }
     }
 }

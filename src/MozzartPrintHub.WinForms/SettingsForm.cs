@@ -18,6 +18,8 @@ public sealed class SettingsForm : Form
     private readonly ComboBox _defaultPrinter = new() { Width = 320, DropDownStyle = ComboBoxStyle.DropDownList };
     private readonly CheckBox _autoPrint = new() { Text = "Auto print incoming jobs" };
     private readonly CheckBox _startWithWindows = new() { Text = "Start with Windows (current user)" };
+    private readonly TextBox _sumatraPath = new() { Width = 320 };
+    private readonly NumericUpDown _sumatraTimeout = new() { Minimum = 5, Maximum = 300, Width = 100 };
 
     public AppSettings UpdatedSettings { get; private set; }
 
@@ -64,6 +66,8 @@ public sealed class SettingsForm : Form
         AddRow(layout, "Default printer:", _defaultPrinter);
         AddRow(layout, string.Empty, _autoPrint);
         AddRow(layout, string.Empty, _startWithWindows);
+        AddRow(layout, "Sumatra path:", _sumatraPath);
+        AddRow(layout, "Sumatra timeout (s):", _sumatraTimeout);
 
         var buttons = new FlowLayoutPanel
         {
@@ -121,6 +125,8 @@ public sealed class SettingsForm : Form
 
         _autoPrint.Checked = settings.Print.AutoPrint;
         _startWithWindows.Checked = settings.Print.StartWithWindows;
+        _sumatraPath.Text = settings.Print.SumatraPath;
+        _sumatraTimeout.Value = Math.Clamp(settings.Print.SumatraTimeoutSeconds, 5, 300);
     }
 
     private void SaveAndClose()
@@ -146,7 +152,11 @@ public sealed class SettingsForm : Form
             {
                 DefaultPrinterName = _defaultPrinter.SelectedItem?.ToString() ?? string.Empty,
                 AutoPrint = _autoPrint.Checked,
-                StartWithWindows = _startWithWindows.Checked
+                StartWithWindows = _startWithWindows.Checked,
+                SumatraPath = string.IsNullOrWhiteSpace(_sumatraPath.Text)
+                    ? @"C:\Tools\SumatraPDF\SumatraPDF.exe"
+                    : _sumatraPath.Text.Trim(),
+                SumatraTimeoutSeconds = (int)_sumatraTimeout.Value
             }
         };
 
@@ -176,7 +186,9 @@ public sealed class SettingsForm : Form
             {
                 DefaultPrinterName = value.Print.DefaultPrinterName,
                 AutoPrint = value.Print.AutoPrint,
-                StartWithWindows = value.Print.StartWithWindows
+                StartWithWindows = value.Print.StartWithWindows,
+                SumatraPath = value.Print.SumatraPath,
+                SumatraTimeoutSeconds = value.Print.SumatraTimeoutSeconds
             }
         };
     }

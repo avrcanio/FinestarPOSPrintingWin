@@ -9,6 +9,9 @@ public sealed class EmulatorJob
     public required int RawSizeBytes { get; init; }
     public int UnknownCommandCount { get; init; }
     public required ParsedEscPosDocument Document { get; init; }
+    public string? RequestedPrinterName { get; set; }
+    public string? PdfPath { get; set; }
+    public string? PreviewImagePath { get; set; }
     public string? PrintStatus { get; set; }
     public string? Error { get; set; }
 }

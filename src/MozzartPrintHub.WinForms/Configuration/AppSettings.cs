@@ -29,4 +29,6 @@ public sealed class PrintSettings
     public string DefaultPrinterName { get; set; } = string.Empty;
     public bool AutoPrint { get; set; } = true;
     public bool StartWithWindows { get; set; }
+    public string SumatraPath { get; set; } = @"C:\Tools\SumatraPDF\SumatraPDF.exe";
+    public int SumatraTimeoutSeconds { get; set; } = 60;
 }

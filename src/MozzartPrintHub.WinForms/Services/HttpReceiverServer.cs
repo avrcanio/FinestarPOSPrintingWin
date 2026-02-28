@@ -13,6 +13,7 @@ public sealed class HttpReceiverServer
     private readonly EmulatorStore _store;
     private readonly Func<byte[], string, Task> _onEscPosPayload;
     private readonly ReceiptPreviewService _receiptPreviewService;
+    private readonly BarTicketPdfService _barTicketPdfService;
     private readonly Func<EmulatorJob, Task>? _onJobAdded;
     private readonly string? _token;
     private CancellationTokenSource? _cts;
@@ -25,6 +26,7 @@ public sealed class HttpReceiverServer
         EmulatorStore store,
         Func<byte[], string, Task> onEscPosPayload,
         ReceiptPreviewService receiptPreviewService,
+        BarTicketPdfService barTicketPdfService,
         Func<EmulatorJob, Task>? onJobAdded,
         string? token)
     {
@@ -39,6 +41,7 @@ public sealed class HttpReceiverServer
         _store = store;
         _onEscPosPayload = onEscPosPayload;
         _receiptPreviewService = receiptPreviewService;
+        _barTicketPdfService = barTicketPdfService;
         _onJobAdded = onJobAdded;
         _token = token;
     }
@@ -181,9 +184,34 @@ public sealed class HttpReceiverServer
 
             if (kind == "bar_ticket")
             {
-                var ticketText = BuildBarTicketText(doc.RootElement);
-                var bytes = Encoding.ASCII.GetBytes(ticketText + "\n");
-                await _onEscPosPayload(bytes, $"http:{ctx.Request.RemoteEndPoint}");
+                var barPreview = BuildBarTicketPreview(doc.RootElement);
+                var barPdfBytes = _barTicketPdfService.BuildPdf(
+                    barPreview.Table,
+                    barPreview.Waiter,
+                    barPreview.Round,
+                    barPreview.Lines);
+                var receiptPreview = _receiptPreviewService.BuildFromPdfBytes(barPdfBytes);
+                var pdfPath = SaveTempPdf(barPdfBytes, "bar-ticket");
+
+                var barJob = new EmulatorJob
+                {
+                    Id = Guid.NewGuid().ToString("N"),
+                    Source = "http",
+                    ClientIp = ctx.Request.RemoteEndPoint?.ToString() ?? "unknown",
+                    RawSizeBytes = rawJson.Length,
+                    UnknownCommandCount = 0,
+                    RequestedPrinterName = ReadString(doc.RootElement, "printer_name"),
+                    ReceivedAtUtc = DateTime.UtcNow,
+                    Document = receiptPreview.Document,
+                    PreviewImagePath = receiptPreview.PreviewImagePath,
+                    PdfPath = pdfPath,
+                    PrintStatus = "queued"
+                };
+                _store.Add(barJob);
+                if (_onJobAdded is not null)
+                {
+                    await _onJobAdded(barJob);
+                }
                 await WriteJsonAsync(ctx.Response, 200, new { status = "printed" });
                 return;
             }
@@ -198,6 +226,13 @@ public sealed class HttpReceiverServer
                     pdfBase64 = pdfNode.GetString();
                 }
 
+                if (!TryDecodeBase64Pdf(pdfBase64, out var receiptBytes))
+                {
+                    await WriteJsonAsync(ctx.Response, 400, new { code = "invalid_pdf_base64" });
+                    return;
+                }
+
+                var receiptPreview = _receiptPreviewService.BuildFromPdfBytes(receiptBytes);
                 var item = new EmulatorJob
                 {
                     Id = Guid.NewGuid().ToString("N"),
@@ -205,9 +240,13 @@ public sealed class HttpReceiverServer
                     ClientIp = ctx.Request.RemoteEndPoint?.ToString() ?? "unknown",
                     RawSizeBytes = rawJson.Length,
                     ReceivedAtUtc = DateTime.UtcNow,
-                    Document = _receiptPreviewService.BuildFromPdfBase64(pdfBase64)
+                    UnknownCommandCount = 0,
+                    RequestedPrinterName = ReadString(doc.RootElement, "printer_name"),
+                    Document = receiptPreview.Document,
+                    PreviewImagePath = receiptPreview.PreviewImagePath,
+                    PdfPath = SaveTempPdf(receiptBytes, "receipt")
                 };
-                item.PrintStatus = "preview_only";
+                item.PrintStatus = "queued";
                 _store.Add(item);
                 if (_onJobAdded is not null)
                 {
@@ -248,27 +287,30 @@ public sealed class HttpReceiverServer
         return true;
     }
 
-    private static string BuildBarTicketText(JsonElement root)
+    private static BarTicketPreview BuildBarTicketPreview(JsonElement root)
     {
+        var document = new ParsedEscPosDocument();
+
         if (!root.TryGetProperty("payload", out var payload))
         {
-            return "BAR TICKET";
+            document.Lines.Add(new ParsedLine { Text = "BAR TICKET", Align = "left", Bold = true });
+            return new BarTicketPreview(document, "N/A", "N/A", null, Array.Empty<BarTicketLine>(), 0, "none");
         }
 
         if (payload.ValueKind != JsonValueKind.Object)
         {
-            return "BAR TICKET";
+            document.Lines.Add(new ParsedLine { Text = "BAR TICKET", Align = "left", Bold = true });
+            return new BarTicketPreview(document, "N/A", "N/A", null, Array.Empty<BarTicketLine>(), 0, "none");
         }
 
         var table = payload.TryGetProperty("table", out var tableNode) ? tableNode.GetString() : "N/A";
         var waiter = payload.TryGetProperty("waiter", out var waiterNode) ? waiterNode.GetString() : "N/A";
         var round = payload.TryGetProperty("round_number", out var roundNode) ? roundNode.ToString() : null;
 
-        var sb = new StringBuilder();
-        sb.AppendLine($"Table: {table} | Waiter: {waiter}");
+        document.Lines.Add(new ParsedLine { Text = $"Table: {table} | Waiter: {waiter}", Align = "left", Bold = false });
         if (!string.IsNullOrWhiteSpace(round))
         {
-            sb.AppendLine($"Round: {round}");
+            document.Lines.Add(new ParsedLine { Text = $"Round: {round}", Align = "left", Bold = false });
         }
 
         var items = ResolveItems(payload, out var sourcePath);
@@ -287,14 +329,28 @@ public sealed class HttpReceiverServer
         {
             var qtyText = item.Qty.ToString("0.##", CultureInfo.InvariantCulture);
             var name = string.IsNullOrWhiteSpace(item.Name) ? "(unnamed)" : item.Name;
-            sb.AppendLine($"{qtyText} x {name}");
+            document.Lines.Add(new ParsedLine { Text = $"{qtyText} x {name}", Align = "left", Bold = false });
             if (!string.IsNullOrWhiteSpace(item.Note))
             {
-                sb.AppendLine($"  note: {item.Note}");
+                document.Lines.Add(new ParsedLine { Text = $"  note: {item.Note}", Align = "left", Bold = false });
             }
         }
 
-        return sb.ToString().TrimEnd();
+        var lines = items
+            .Select(i => new BarTicketLine(
+                string.IsNullOrWhiteSpace(i.Name) ? "(unnamed)" : i.Name,
+                i.Qty.ToString("0.##", CultureInfo.InvariantCulture),
+                i.Note))
+            .ToList();
+
+        return new BarTicketPreview(
+            document,
+            table ?? "N/A",
+            waiter ?? "N/A",
+            string.IsNullOrWhiteSpace(round) ? null : round,
+            lines,
+            items.Count,
+            sourcePath);
     }
 
     private static List<NormalizedTicketItem> ResolveItems(JsonElement payload, out string sourcePath)
@@ -415,5 +471,53 @@ public sealed class HttpReceiverServer
         response.Close();
     }
 
+    private static string NormalizeBase64(string input)
+    {
+        const string marker = "base64,";
+        var idx = input.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (idx >= 0)
+        {
+            return input[(idx + marker.Length)..];
+        }
+
+        return input.Trim();
+    }
+
+    private static bool TryDecodeBase64Pdf(string? raw, out byte[] bytes)
+    {
+        bytes = Array.Empty<byte>();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        try
+        {
+            bytes = Convert.FromBase64String(NormalizeBase64(raw));
+            return bytes.Length > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string SaveTempPdf(byte[] bytes, string prefix)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "MozzartPrintHub", "pdf");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, $"{prefix}-{Guid.NewGuid():N}.pdf");
+        File.WriteAllBytes(path, bytes);
+        return path;
+    }
+
     private sealed record NormalizedTicketItem(string Name, decimal Qty, string Note);
+    private sealed record BarTicketPreview(
+        ParsedEscPosDocument Document,
+        string Table,
+        string Waiter,
+        string? Round,
+        IReadOnlyList<BarTicketLine> Lines,
+        int ItemCount,
+        string SourcePath);
 }
