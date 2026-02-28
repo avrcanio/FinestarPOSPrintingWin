@@ -1,6 +1,9 @@
 # Build artifacts
 **/bin/
 **/obj/
+artifacts/publish/
+artifacts/package/
+artifacts/*.zip
 
 # User/IDE files
 *.user
