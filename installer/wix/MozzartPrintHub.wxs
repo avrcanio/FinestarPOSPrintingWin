@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="Mozzart Print Hub"
+    Manufacturer="Mozzart"
+    Version="1.0.1"
+    UpgradeCode="{E4F4D3B3-1E2D-4A91-B4F6-4EFA8F535E60}"
+    InstallerVersion="500"
+    Scope="perMachine"
+    Compressed="yes">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Mozzart Print Hub is already installed." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="MozzartPrintHub" />
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="Mozzart Print Hub" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="InstallMarker" />
+    </Feature>
+
+    <CustomAction
+      Id="AddUrlAcl"
+      Directory="System64Folder"
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore"
+      ExeCommand='cmd.exe /C netsh http add urlacl url=http://+:8089/ user="[LogonUser]"' />
+
+    <InstallExecuteSequence>
+      <Custom Action="AddUrlAcl" After="InstallFiles" Condition="NOT Installed" />
+    </InstallExecuteSequence>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(var.PublishDir)\**" />
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <Component Id="InstallMarker" Directory="INSTALLFOLDER" Guid="*">
+      <RegistryValue
+        Root="HKLM"
+        Key="Software\MozzartPrintHub"
+        Name="Version"
+        Value="1.0.1"
+        Type="string"
+        KeyPath="yes" />
+    </Component>
+  </Fragment>
+</Wix>

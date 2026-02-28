@@ -4,6 +4,8 @@
 artifacts/publish/
 artifacts/package/
 artifacts/*.zip
+artifacts/*.msi
+artifacts/*.wixpdb
 
 # User/IDE files
 *.user
