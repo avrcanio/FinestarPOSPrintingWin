@@ -9,7 +9,9 @@
     Scope="perMachine"
     Compressed="yes">
 
-    <MajorUpgrade DowngradeErrorMessage="A newer version of Mozzart Print Hub is already installed." />
+    <MajorUpgrade
+      AllowSameVersionUpgrades="yes"
+      DowngradeErrorMessage="A newer version of Mozzart Print Hub is already installed." />
 
     <MediaTemplate EmbedCab="yes" />
 
